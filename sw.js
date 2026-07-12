@@ -1,4 +1,4 @@
-const CACHE = 'tbm-mgmt-v16';
+const CACHE = 'tbm-mgmt-v18';
 const ASSETS = ['./','./index.html','./tbm_app.js','./app-config.js','./manifest.webmanifest','./icon-192.png','./icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

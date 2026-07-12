@@ -732,7 +732,7 @@ function viewRegister(){
       <span class="chip ${existing?'done':'wait'}" style="margin-left:auto">${existing?"✔ 등록됨(수정 가능)":"미등록"}</span></div>
     <div class="bd">
       <div class="ctrl-grid">
-        <div class="field"><label>실시 날짜</label><input type="date" data-f="regDate" value="${date}"></div>
+        <div class="field"><label>실시 날짜</label><input type="date" data-f="regDate" value="${date}" max="${todayYmd()}"></div>
         <div class="field"><label>소속 부서</label>
           <input type="text" value="${esc(team?team.name:'')}" disabled></div>
         <div class="field"><label>교육시간(분)</label>
@@ -781,7 +781,6 @@ function viewRegister(){
       </div>
       <div class="btn-row no-print" style="margin-top:16px">
         <button class="btn primary lg" data-act="regSave">${existing?"💾 수정 저장":"💾 TBM 등록"}</button>
-        <button class="btn" data-act="regWeek">📅 이번 주(월~금) 일괄 등록</button>
         ${existing?`<button class="btn danger" data-act="regDelete">등록 취소(삭제)</button>`:""}
       </div>
     </div>
@@ -839,24 +838,30 @@ function adoptionDate(){
   const recs=DB.records(); if(!recs.length) return null;
   return recs.reduce((min,r)=> r.date<min?r.date:min, recs[0].date);
 }
+/* 이 계정의 '도입 시작일' = 이 계정의 가장 이른 등록일(없으면 null). 이 날 이전 근무일은 집계 대상 아님 */
+function acctStartYmd(acc){
+  const id=acc&&acc.id; if(!id) return null;
+  const recs=DB.records().filter(r=>r.accountId===id);
+  if(!recs.length) return null;
+  return recs.reduce((min,r)=> r.date<min?r.date:min, recs[0].date);
+}
 function computeAcc(accId, half){
   const s=DB.settings();
   const acc=DB.account(accId);
   const target = (acc && acc.targetHours!=null && acc.targetHours!=="") ? +acc.targetHours : s.halfTargetHours;
   const allWd = workdaysInRange(half.start, half.end, s.workdays);
   const today=new Date(); const cutoff = today<half.end?today:half.end;
-  // 미실시는 '시스템 도입일' 및 '계정 생성일' 이후 근무일만 대상으로 산정
-  const adopt = adoptionDate();
-  const effStart = new Date(half.start);
-  if(adopt){ const a=parseYmd(adopt); if(a>effStart) effStart.setTime(a.getTime()); }
-  if(acc && acc.createdAt){ const c=new Date(acc.createdAt); c.setHours(0,0,0,0); if(c>effStart) effStart.setTime(c.getTime()); }
-  const elapsed = adopt ? workdaysInRange(effStart, cutoff, s.workdays) : [];
-  const recs = DB.records().filter(r=>r.accountId===accId && r.date>=ymd(half.start) && r.date<=ymd(half.end));
   const cutoffYmd = ymd(cutoff);
+  // 집계 시작일 = 이 계정의 첫 등록일(그 이전 근무일은 미실시로 세지 않음)
+  const startY = acctStartYmd(acc);
+  const effStart = new Date(half.start);
+  if(startY){ const sd=parseYmd(startY); if(sd>effStart) effStart.setTime(sd.getTime()); }
+  const elapsed = startY ? workdaysInRange(effStart, cutoff, s.workdays) : [];
+  const recs = DB.records().filter(r=>r.accountId===accId && r.date>=ymd(half.start) && r.date<=ymd(half.end));
   const doneDates = new Set(recs.map(r=>r.date));
-  // 실시(회): 이 계정이 반기 내 실제로 등록한 TBM 일수(오늘까지). 근무일 창과 무관하게 집계.
+  // 실시(회): 이 계정이 반기 내 오늘까지 실제로 등록한 TBM 일수(미래 등록은 예정으로 제외)
   const done = new Set(recs.filter(r=>r.date<=cutoffYmd).map(r=>r.date)).size;
-  // 미실시(일): 집계 창(도입일·계정생성일 이후 근무일) 중 기록이 없는 날
+  // 미실시(일): 도입일 이후 오늘까지의 근무일 중 기록이 없는 날
   const missedDates = elapsed.filter(d=>!doneDates.has(d));
   const accMin = recs.reduce((a,r)=>a+(+r.durationMin||0),0);
   const accHours = accMin/60;
@@ -868,6 +873,7 @@ function computeAcc(accId, half){
 function calendarBlock(accId){
   const y=state.calY, m=state.calM, s=DB.settings();
   const today=todayYmd();
+  const start=acctStartYmd(DB.account(accId));
   const dowHead=DOW.map((d,i)=>`<div class="cal-dow ${i===0?'sun':i===6?'sat':''}">${d}</div>`).join("");
   const first=new Date(y,m-1,1), startPad=first.getDay(), days=new Date(y,m,0).getDate();
   let cells="";
@@ -878,7 +884,9 @@ function calendarBlock(accId){
     const rec=DB.recordFor(accId,key);
     let cls="wait", mark="", hrs="";
     if(!isWd){ cls="off"; mark=""; }
-    else if(rec){ cls="done"; mark="✔ 실시"; hrs=(rec.durationMin||0)+"′"; }
+    else if(start && key<start){ cls="off"; mark=""; }            // 도입 이전 → 비대상
+    else if(rec && key<=today){ cls="done"; mark="✔ 실시"; hrs=(rec.durationMin||0)+"′"; }
+    else if(rec){ cls="wait"; mark="✔ 등록"; hrs=(rec.durationMin||0)+"′"; }   // 미래 등록 → 예정(등록)
     else if(key>today){ cls="wait"; mark="예정"; }
     else { cls="miss"; mark="✕ 미실시"; }
     const extra=(key===today?" today":"")+(dow===0?" sun":dow===6?" sat":"");
@@ -1026,20 +1034,25 @@ function viewDaily(){
     const extra=(key===today?" today":"")+(dow===0?" sun":dow===6?" sat":"");
     let cls="wait", mark="", hrs="", clickable="";
     if(sel==="all"){
+      const adopt=adoptionDate();
       if(!isWd){ cls="off"; }
+      else if(adopt && key<adopt){ cls="off"; }              // 최초 도입 이전 → 비대상
+      else if(key>today){ cls="wait"; mark="예정"; }          // 미래 → 예정
       else {
         const done=DB.recordsDoneOn(key);
         const doneCnt=accs.filter(a=>done.has(a.id)).length;
         const tot=accs.length;
         if(tot>0 && doneCnt===tot){ cls="done"; mark=`전체 ${doneCnt}/${tot}`; }
-        else if(key>today){ cls="wait"; mark="예정"; }
         else { cls="miss"; mark=`${doneCnt}/${tot}`; }
         if(doneCnt>0) clickable=`data-act="viewDay" data-date="${key}"`;
       }
     } else {
       const rec=DB.recordFor(sel,key);
+      const start=acctStartYmd(DB.account(sel));
       if(!isWd){ cls="off"; }
-      else if(rec){ cls="done"; mark="✔ 실시"; hrs=(rec.durationMin||0)+"′"; clickable=`data-act="viewRec" data-id="${rec.id}"`; }
+      else if(start && key<start){ cls="off"; }               // 도입 이전 → 비대상
+      else if(rec && key<=today){ cls="done"; mark="✔ 실시"; hrs=(rec.durationMin||0)+"′"; clickable=`data-act="viewRec" data-id="${rec.id}"`; }
+      else if(rec){ cls="wait"; mark="✔ 등록"; hrs=(rec.durationMin||0)+"′"; clickable=`data-act="viewRec" data-id="${rec.id}"`; }
       else if(key>today){ cls="wait"; mark="예정"; }
       else { cls="miss"; mark="✕ 미실시"; }
     }
@@ -1330,7 +1343,7 @@ function viewHelp(){
     <h3>👷 관리감독자 (사용자 페이지)</h3>
     <ul>
       <li><b>TBM 등록</b>: 날짜를 고르고 <span class="kbd">교육내용 자동생성</span>을 누르면 위험요인 3건과 대책 3건이 자동 편성됩니다. 모든 칸은 현장 상황에 맞게 수정할 수 있고, 항목별 <span class="kbd">⟳ 재생성</span>도 가능합니다. 교육시간·참석자·비고를 입력해 <span class="kbd">등록</span>합니다.</li>
-      <li><b>이번 주 일괄 등록</b>으로 월~금 5일치를 한 번에 생성·등록할 수 있습니다.</li>
+      <li>등록은 <b>오늘까지의 날짜</b>만 가능합니다(미래 날짜는 미리 등록할 수 없음). 지난 날짜는 언제든 추가 등록·수정할 수 있습니다.</li>
       <li><b>내 현황</b>: 우리 부서의 반기 목표 대비 누적시간·잔여시간과 일별 실시 캘린더를 확인합니다.</li>
       <li>계절(혹서기 6~8월 / 혹한기 12~1월)에는 관련 안전 항목이 매일 1건 자동 포함됩니다.</li>
     </ul>
@@ -1493,6 +1506,11 @@ function openPhoto(src){ const lb=$("#lightbox"); if(!lb||!src) return;
   lb.classList.add("on"); }
 function closePhoto(){ const lb=$("#lightbox"); if(lb){ lb.classList.remove("on"); lb.innerHTML=""; } }
 function regSaveNow(){
+  if(state.reg.date > todayYmd()){
+    toast("미래 날짜는 등록할 수 없습니다. 실시한 날짜(오늘까지)로 등록해 주세요.");
+    const el=$('[data-f=regDate]'); if(el){ el.focus(); }
+    return;
+  }
   if(!state.reg.attendees || !String(state.reg.attendees).trim()){
     toast("참석자는 필수 입력 항목입니다."); const el=$('[data-f=regAtt]'); if(el){ el.focus(); }
     return;
@@ -1508,29 +1526,6 @@ function regSaveNow(){
     photos:Array.isArray(state.reg.photos)?state.reg.photos.slice():[], season
   });
   toast(existed?"수정 저장했습니다.":"TBM을 등록했습니다.");
-  renderView();
-}
-function regWeekBulk(){
-  if(!state.reg.attendees || !String(state.reg.attendees).trim()){
-    toast("참석자를 먼저 입력해 주세요. (이번 주 전체에 동일 적용)"); const el=$('[data-f=regAtt]'); if(el){ el.focus(); }
-    return;
-  }
-  const s=DB.settings(), team=DB.team(state.teamId);
-  const att=String(state.reg.attendees).trim();
-  const d=parseYmd(state.reg.date), dow=d.getDay(), offMon=(dow===0?-6:1-dow);
-  const mon=new Date(d); mon.setDate(d.getDate()+offMon);
-  let count=0, skipped=0;
-  for(let i=0;i<7;i++){
-    const dd=new Date(mon); dd.setDate(mon.getDate()+i);
-    if(!s.workdays.includes(dd.getDay())) continue;
-    const key=ymd(dd);
-    if(DB.recordFor(state.account.id,key)){ skipped++; continue; }
-    const items=genDay(team?team.contentCat:"all", dd.getMonth()+1, state.reg.seasonOn);
-    const season=state.reg.seasonOn?seasonOf(dd.getMonth()+1):null;
-    DB.addRecord({date:key, accountId:state.account.id, teamId:state.teamId, supervisor:state.account.name, durationMin:s.sessionMinutes, items, attendees:att, note:"", photos:[], season});
-    count++;
-  }
-  toast(`이번 주 ${count}일 등록${skipped?` · 기존 ${skipped}일 유지`:""}`);
   renderView();
 }
 
@@ -1695,7 +1690,6 @@ document.addEventListener("click", e=>{
     renderRegItems(); return;
   }
   if(act==="regSave"){ regSaveNow(); return; }
-  if(act==="regWeek"){ regWeekBulk(); return; }
   if(act==="regDelete"){ const ex=DB.recordFor(state.teamId,state.reg.date); if(ex){ DB.delRecord(ex.id); state.reg.items=null; ensureRegItems(); toast("등록을 취소했습니다."); renderView(); } return; }
   if(act==="regPrint"){
     printRecObj({date:state.reg.date, teamId:state.teamId, supervisor:state.account.name, durationMin:+state.reg.minutes||10, items:state.reg.items, attendees:state.reg.attendees, note:state.reg.note, season:state.reg.seasonOn?seasonOf(parseYmd(state.reg.date).getMonth()+1):null});
@@ -1817,7 +1811,11 @@ document.addEventListener("click", e=>{
 /* 변경 (select / checkbox / date) */
 document.addEventListener("change", e=>{
   const t=e.target, f=t.dataset.f;
-  if(f==="regDate"){ loadRegForDate(t.value); renderView(); return; }
+  if(f==="regDate"){
+    let v=t.value;
+    if(v && v>todayYmd()){ v=todayYmd(); t.value=v; toast("미래 날짜는 선택할 수 없습니다. 오늘로 설정했습니다."); }
+    loadRegForDate(v); renderView(); return;
+  }
   if(f==="cmCat"){ state.cmCat=t.value; renderView(); return; }
   if(f==="calTeam"){ state.calTeam=t.value; renderView(); return; }
   if(f==="recTeam"){ state.recTeam=t.value; renderView(); return; }

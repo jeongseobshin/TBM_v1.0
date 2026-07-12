@@ -852,8 +852,11 @@ function computeAcc(accId, half){
   if(acc && acc.createdAt){ const c=new Date(acc.createdAt); c.setHours(0,0,0,0); if(c>effStart) effStart.setTime(c.getTime()); }
   const elapsed = adopt ? workdaysInRange(effStart, cutoff, s.workdays) : [];
   const recs = DB.records().filter(r=>r.accountId===accId && r.date>=ymd(half.start) && r.date<=ymd(half.end));
+  const cutoffYmd = ymd(cutoff);
   const doneDates = new Set(recs.map(r=>r.date));
-  const done = elapsed.filter(d=>doneDates.has(d)).length;
+  // 실시(회): 이 계정이 반기 내 실제로 등록한 TBM 일수(오늘까지). 근무일 창과 무관하게 집계.
+  const done = new Set(recs.filter(r=>r.date<=cutoffYmd).map(r=>r.date)).size;
+  // 미실시(일): 집계 창(도입일·계정생성일 이후 근무일) 중 기록이 없는 날
   const missedDates = elapsed.filter(d=>!doneDates.has(d));
   const accMin = recs.reduce((a,r)=>a+(+r.durationMin||0),0);
   const accHours = accMin/60;

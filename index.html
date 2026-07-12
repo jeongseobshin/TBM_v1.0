@@ -407,6 +407,12 @@ textarea{resize:vertical;min-height:46px;line-height:1.45}
 <div id="lightbox"></div>
 <script src="app-config.js"></script>
 <script src="tbm_app.js"></script>
-<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));}</script>
+<script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('./sw.js').catch(function(){});
+  var _r=false;
+  navigator.serviceWorker.addEventListener('controllerchange',function(){ if(!_r){_r=true; location.reload();} });
+}
+</script>
 </body>
 </html>
